@@ -1,0 +1,7 @@
+id: negeyser
+name: NEGeyserExtension
+main: io.github.negeyser.NEGeyserExtension
+api: 2.12.0
+version: 1.0.0
+authors:
+  - NEGeyserExtension contributors

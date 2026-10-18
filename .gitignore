@@ -1,0 +1,39 @@
+# Gradle / build output
+build/
+.gradle/
+out/
+*.class
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Local test servers, logs and scratch work
+.tmp/
+latest.log
+*.log
+/scratch/
+
+# Internal development notes (not part of the public repository)
+/HANDOVER.md
+
+# Packaged binaries and release copies (use GitHub Releases instead)
+/release/
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Third-party reference sources and archives (not redistributed)
+/upstream/
+/netease/
+/Geyser-master.zip
+/Geyser-netease-1.21.130.zip
+/Geyser-Standalone.jar
+/Protocol-3.0.zip
+/Protocol-3.0-netease.zip
+
+# OS metadata
+.DS_Store
+Thumbs.db
