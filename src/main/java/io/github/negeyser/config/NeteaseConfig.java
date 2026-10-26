@@ -18,7 +18,10 @@ public final class NeteaseConfig {
     private boolean allowPcClients;
     private boolean allowSingleChain;
     private java.util.Set<String> trustedRelayAddresses = java.util.Set.of();
-    private int singleChainPackStackDelayMs = 1000;
+    private int singleChainPackStackDelayMs = 2000;
+    private int singleChainPackFallbackMs = 3000;
+    private int singleChainPackMaxWaitMs = 10000;
+    private boolean singleChainResendChunks = true;
     private boolean filterUnknownItems = true;
     private boolean stripItemNbt = false;
     private java.util.Set<String> extraItemNbt = java.util.Set.of();
@@ -58,6 +61,18 @@ public final class NeteaseConfig {
 
     public int singleChainPackStackDelayMs() {
         return singleChainPackStackDelayMs;
+    }
+
+    public int singleChainPackFallbackMs() {
+        return singleChainPackFallbackMs;
+    }
+
+    public int singleChainPackMaxWaitMs() {
+        return singleChainPackMaxWaitMs;
+    }
+
+    public boolean singleChainResendChunks() {
+        return singleChainResendChunks;
     }
 
     public boolean filterUnknownItems() {
@@ -110,6 +125,18 @@ public final class NeteaseConfig {
 
     void setSingleChainPackStackDelayMs(int value) {
         this.singleChainPackStackDelayMs = value;
+    }
+
+    void setSingleChainPackFallbackMs(int value) {
+        this.singleChainPackFallbackMs = value;
+    }
+
+    void setSingleChainPackMaxWaitMs(int value) {
+        this.singleChainPackMaxWaitMs = value;
+    }
+
+    void setSingleChainResendChunks(boolean value) {
+        this.singleChainResendChunks = value;
     }
 
     void setFilterUnknownItems(boolean value) {

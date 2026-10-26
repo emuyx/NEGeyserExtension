@@ -79,6 +79,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.PublicKey;
+import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashSet;
 import java.util.List;
@@ -86,6 +87,7 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -106,8 +108,14 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
     private boolean resourcePackTransferStarted;
     /** Early-3 download flow is running; duplicate status 3 packets must be ignored. */
     private boolean earlyResourcePackActive;
-    private boolean earlyResourcePackStackScheduled;
+    private ScheduledFuture<?> earlyResourcePackStackTask;
+    private long earlyResourcePackGeneration;
+    private long lastEarlyPackCompletionNanos;
+    private boolean earlyResourcePackStackSent;
+    /** Requested packs that have not finished downloading yet. */
     private final Set<UUID> earlyResourcePacksPending = new HashSet<>();
+    /** Packs that received at least one chunk request in the early-3 flow. */
+    private final Set<UUID> earlyResourcePacksRequested = new HashSet<>();
 
     public NeteaseUpstreamHandler(GeyserImpl geyser, GeyserSession session) {
         super(geyser, session);
@@ -364,9 +372,12 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
         this.advertisedPacks = List.copyOf(info.getResourcePackInfos());
         this.resourcePacksInfoHasPacks = !this.advertisedPacks.isEmpty();
         this.resourcePackTransferStarted = false;
+        cancelScheduledStack("new resource pack info");
         this.earlyResourcePackActive = false;
-        this.earlyResourcePackStackScheduled = false;
+        this.lastEarlyPackCompletionNanos = 0L;
+        this.earlyResourcePackStackSent = false;
         this.earlyResourcePacksPending.clear();
+        this.earlyResourcePacksRequested.clear();
 
         session.sendUpstreamPacket(info);
         return PacketSignal.HANDLED;
@@ -384,8 +395,19 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
             return PacketSignal.HANDLED;
         }
 
+        if (singleChainLogin || earlyResourcePackActive) {
+            NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] response status=" + packet.getStatus()
+                + " packIds=" + (packet.getPackIds() == null ? 0 : packet.getPackIds().size())
+                + " early=" + earlyResourcePackActive);
+        }
+
         switch (packet.getStatus()) {
             case COMPLETED -> {
+                if (singleChainLogin || earlyResourcePackActive) {
+                    NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] COMPLETED received; stackSent="
+                        + earlyResourcePackStackSent + " pending=" + earlyResourcePacksPending
+                        + " requested=" + earlyResourcePacksRequested);
+                }
                 finishedResourcePackSending = true;
                 if (geyser.config().java().authType() != AuthType.ONLINE) {
                     session.authenticate(session.getAuthData().name());
@@ -444,14 +466,53 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
             return;
         }
 
+        boolean early = earlyResourcePackActive;
+        UUID packId = packet.getPackId();
+        if (early) {
+            // Any chunk activity restarts the debounce: the client may be about to request
+            // the next pack, so an already-scheduled stack must not fire yet.
+            cancelScheduledStack("chunk request");
+            markEarlyPackRequested(packId);
+        }
+
+        boolean duplicate = early && isDuplicateChunk(packet);
+        boolean resend = duplicate && NEGeyserExtension.CONFIG != null
+            && NEGeyserExtension.CONFIG.singleChainResendChunks();
+        if (duplicate && debug()) {
+            NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] duplicate chunk request pack=" + packId
+                + " index=" + packet.getChunkIndex() + " resend=" + resend);
+        }
+
         resourcePackTransferStarted = true;
-        super.sendChunk(packet);
-        if (earlyResourcePackActive) {
-            trackEarlyPackProgress(packet.getPackId());
+        super.sendChunk(packet, resend);
+        if (early) {
+            trackEarlyPackProgress(packId);
+            scheduleStackIfIdle();
         }
 
         int delay = NEGeyserExtension.CONFIG == null ? 0 : NEGeyserExtension.CONFIG.resourcePackChunkDelayMs();
         session.scheduleInEventLoop(this::processNextChunk, Math.max(1, delay), TimeUnit.MILLISECONDS);
+    }
+
+    private void markEarlyPackRequested(UUID packId) {
+        if (resourcePackLoadEvent == null || !resourcePackLoadEvent.getPacks().containsKey(packId)) {
+            return;
+        }
+        if (earlyResourcePacksRequested.add(packId)) {
+            earlyResourcePacksPending.add(packId);
+            if (debug()) {
+                NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] first chunk request for pack " + packId);
+            }
+        }
+    }
+
+    private boolean isDuplicateChunk(ResourcePackChunkRequestPacket packet) {
+        int index = packet.getChunkIndex();
+        if (index < 0) {
+            return false;
+        }
+        BitSet sent = sentChunks.get(packet.getPackId());
+        return sent != null && sent.get(index);
     }
 
     @Override
@@ -462,8 +523,8 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
 
     /**
      * Single-chain relay sessions acknowledge the pack list (status 3) before the client has
-     * downloaded anything. Send one DataInfo per advertised pack, wait for the client to request
-     * every chunk, then send the stack after a short settle delay.
+     * downloaded anything. Send one DataInfo per advertised pack, then wait only for packs the
+     * client actually requests. Clients with cached packs may request nothing at all.
      */
     private void startSingleChainPackDownload() {
         earlyResourcePackActive = true;
@@ -472,18 +533,69 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
 
         for (ResourcePacksInfoPacket.Entry entry : advertisedPacks) {
             UUID packId = entry.getPackId();
-            sendPackDataInfo(packId + "_" + entry.getPackVersion());
-
             ResourcePackHolder holder = resourcePackLoadEvent == null
                 ? null : resourcePackLoadEvent.getPacks().get(packId);
-            if (holder != null && holder.codec().size() > 0) {
-                earlyResourcePacksPending.add(packId);
-            }
+            long size = holder == null ? -1 : holder.codec().size();
+            int chunkCount = size <= 0 ? 0
+                : (int) Math.ceil(size / (double) GeyserResourcePack.CHUNK_SIZE);
+            NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] pack " + packId
+                + " version=" + entry.getPackVersion() + " size=" + size
+                + " chunks=" + chunkCount);
+            sendPackDataInfo(packId + "_" + entry.getPackVersion());
         }
 
-        if (earlyResourcePacksPending.isEmpty()) {
-            scheduleSingleChainStack();
+        int fallbackMs = NEGeyserExtension.CONFIG == null
+            ? 3000 : Math.max(0, NEGeyserExtension.CONFIG.singleChainPackFallbackMs());
+        int maxWaitMs = NEGeyserExtension.CONFIG == null
+            ? 10000 : Math.max(0, NEGeyserExtension.CONFIG.singleChainPackMaxWaitMs());
+
+        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] waiting up to " + fallbackMs
+            + "ms for the first chunk request, and at most " + maxWaitMs
+            + "ms for requested packs");
+        session.scheduleInEventLoop(this::onEarlyPackFallback, fallbackMs, TimeUnit.MILLISECONDS);
+        session.scheduleInEventLoop(this::onEarlyPackMaxWait, maxWaitMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Some clients already have every advertised pack cached and never request chunks. Do not
+     * block the stack waiting for chunks that will never arrive.
+     */
+    private void onEarlyPackFallback() {
+        if (!earlyResourcePackActive || earlyResourcePackStackSent
+            || finishedResourcePackSending || session.isClosed()) {
+            return;
         }
+        if (!earlyResourcePacksRequested.isEmpty()) {
+            if (debug()) {
+                NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] fallback skipped: chunk requests "
+                    + "were received; waiting for completion or max wait");
+            }
+            return;
+        }
+
+        int fallbackMs = NEGeyserExtension.CONFIG == null
+            ? 3000 : Math.max(0, NEGeyserExtension.CONFIG.singleChainPackFallbackMs());
+        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] fallback after " + fallbackMs
+            + "ms without chunk requests; treating all packs as cached");
+        logEarlyPackSummary("fallback");
+        sendSingleChainStack("fallback: no chunk requests (cached)");
+    }
+
+    /**
+     * Hard upper bound: never wait forever on a stuck or slow client.
+     */
+    private void onEarlyPackMaxWait() {
+        if (!earlyResourcePackActive || earlyResourcePackStackSent
+            || finishedResourcePackSending || session.isClosed()) {
+            return;
+        }
+
+        int maxWaitMs = NEGeyserExtension.CONFIG == null
+            ? 10000 : Math.max(0, NEGeyserExtension.CONFIG.singleChainPackMaxWaitMs());
+        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] max wait " + maxWaitMs
+            + "ms exceeded; sending stack with pending packs, if any");
+        logEarlyPackSummary("max-wait");
+        sendSingleChainStack("max-wait exceeded");
     }
 
     private void trackEarlyPackProgress(UUID packId) {
@@ -494,6 +606,7 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
 
         ResourcePackHolder holder = resourcePackLoadEvent.getPacks().get(packId);
         if (holder == null) {
+            earlyResourcePacksPending.remove(packId);
             return;
         }
 
@@ -502,32 +615,102 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
         BitSet sent = sentChunks.get(packId);
         if (sent != null && sent.cardinality() >= chunkCount) {
             earlyResourcePacksPending.remove(packId);
+            if (debug()) {
+                NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] chunks complete for pack " + packId
+                    + " (" + sent.cardinality() + "/" + chunkCount + ")");
+            }
             if (earlyResourcePacksPending.isEmpty()) {
-                scheduleSingleChainStack();
+                lastEarlyPackCompletionNanos = System.nanoTime();
             }
         }
     }
 
-    private void scheduleSingleChainStack() {
-        if (earlyResourcePackStackScheduled) {
-            return;
+    private void logEarlyPackSummary(String reason) {
+        List<UUID> requested = new ArrayList<>(earlyResourcePacksRequested);
+        List<UUID> cached = new ArrayList<>();
+        for (ResourcePacksInfoPacket.Entry entry : advertisedPacks) {
+            if (!earlyResourcePacksRequested.contains(entry.getPackId())) {
+                cached.add(entry.getPackId());
+            }
         }
-        earlyResourcePackStackScheduled = true;
-
-        int delay = NEGeyserExtension.CONFIG == null
-            ? 1000 : NEGeyserExtension.CONFIG.singleChainPackStackDelayMs();
-        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] single-chain packs fully sent; sending "
-            + "stack in " + Math.max(0, delay) + "ms");
-        session.scheduleInEventLoop(this::sendSingleChainStack, Math.max(0, delay),
-            TimeUnit.MILLISECONDS);
+        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] " + reason + ": requested=" + requested
+            + " cached=" + cached + " pending=" + earlyResourcePacksPending);
     }
 
-    private void sendSingleChainStack() {
-        if (session.isClosed() || finishedResourcePackSending) {
+    /**
+     * Called after a chunk request has been processed. Starts/restarts the stack debounce only
+     * when every pack that was actually requested is complete. Cached (never requested) packs
+     * do not block the stack.
+     */
+    private void scheduleStackIfIdle() {
+        if (earlyResourcePackStackSent || !earlyResourcePacksPending.isEmpty()
+            || earlyResourcePacksRequested.isEmpty()) {
             return;
         }
+        logEarlyPackSummary("requested packs complete; (re)starting stack debounce");
+        scheduleSingleChainStack();
+    }
+
+    private void scheduleSingleChainStack() {
+        if (earlyResourcePackStackSent || !earlyResourcePacksPending.isEmpty()
+            || earlyResourcePacksRequested.isEmpty()
+            || session.isClosed() || finishedResourcePackSending) {
+            return;
+        }
+
+        cancelScheduledStack("reschedule");
+        long generation = ++earlyResourcePackGeneration;
+
+        int delay = NEGeyserExtension.CONFIG == null
+            ? 2000 : Math.max(0, NEGeyserExtension.CONFIG.singleChainPackStackDelayMs());
+        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] scheduling stack in " + delay
+            + "ms (generation=" + generation + ", requested="
+            + earlyResourcePacksRequested.size() + ", pending="
+            + earlyResourcePacksPending.size() + ")");
+
+        earlyResourcePackStackTask = session.scheduleInEventLoop(() -> {
+            if (generation != earlyResourcePackGeneration) {
+                if (debug()) {
+                    NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] stale stack timer ignored "
+                        + "(generation=" + generation + ", current="
+                        + earlyResourcePackGeneration + ")");
+                }
+                return;
+            }
+            if (earlyResourcePackStackSent || session.isClosed() || finishedResourcePackSending) {
+                return;
+            }
+            if (!earlyResourcePacksPending.isEmpty()) {
+                NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] stack timer fired but pending is "
+                    + "not empty; waiting for max-wait instead: " + earlyResourcePacksPending);
+                return;
+            }
+            sendSingleChainStack("debounce expired after " + delay + "ms");
+        }, delay, TimeUnit.MILLISECONDS);
+    }
+
+    private void cancelScheduledStack(String reason) {
+        ScheduledFuture<?> task = earlyResourcePackStackTask;
+        earlyResourcePackStackTask = null;
+        if (task != null && !task.isDone() && task.cancel(false)) {
+            NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] cancelled pending stack timer ("
+                + reason + ")");
+        }
+        earlyResourcePackGeneration++;
+    }
+
+    private void sendSingleChainStack(String reason) {
+        if (earlyResourcePackStackSent || session.isClosed() || finishedResourcePackSending) {
+            return;
+        }
+        earlyResourcePackStackSent = true;
+        earlyResourcePackStackTask = null;
+        long elapsedMs = lastEarlyPackCompletionNanos == 0L ? -1L
+            : (System.nanoTime() - lastEarlyPackCompletionNanos) / 1_000_000L;
         sendResourcePackStack();
-        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] single-chain resource pack stack sent");
+        NEGeyserExtension.LOG.info("[NETEASE-RESOURCE] single-chain resource pack stack sent ("
+            + reason + ", sinceLastPackCompletion="
+            + (elapsedMs < 0L ? "n/a" : elapsedMs + "ms") + ")");
     }
 
     private void sendResourcePackStack() {

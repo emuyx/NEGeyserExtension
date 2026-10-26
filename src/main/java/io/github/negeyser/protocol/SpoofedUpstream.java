@@ -9,15 +9,23 @@ import io.github.negeyser.codec.packet.ConfirmSkinPacket;
 import org.cloudburstmc.nbt.NbtMap;
 import org.cloudburstmc.protocol.bedrock.data.BlockChangeEntry;
 import org.cloudburstmc.protocol.bedrock.data.GameRuleData;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataMap;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityProperties;
 import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition;
 import org.cloudburstmc.protocol.bedrock.data.skin.ImageData;
 import org.cloudburstmc.protocol.bedrock.data.skin.SerializedSkin;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
+import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
+import org.cloudburstmc.protocol.bedrock.codec.BedrockPacketDefinition;
+import org.cloudburstmc.protocol.bedrock.codec.EntityDataTypeMap;
 import org.cloudburstmc.protocol.bedrock.data.biome.BiomeDefinitionData;
 import org.cloudburstmc.protocol.bedrock.data.biome.BiomeDefinitions;
 import org.cloudburstmc.protocol.bedrock.data.definitions.ItemDefinition;
 import org.cloudburstmc.protocol.bedrock.data.inventory.CreativeItemData;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData;
+import org.cloudburstmc.protocol.bedrock.packet.AddEntityPacket;
 import org.cloudburstmc.protocol.bedrock.packet.AddItemEntityPacket;
 import org.cloudburstmc.protocol.bedrock.packet.AvailableEntityIdentifiersPacket;
 import org.cloudburstmc.protocol.bedrock.packet.AddPlayerPacket;
@@ -34,16 +42,22 @@ import org.cloudburstmc.protocol.bedrock.packet.ItemStackResponsePacket;
 import org.cloudburstmc.protocol.bedrock.packet.MobArmorEquipmentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.MobEquipmentPacket;
 import org.cloudburstmc.protocol.bedrock.packet.CreativeContentPacket;
+import org.cloudburstmc.protocol.bedrock.packet.EntityEventPacket;
 import org.cloudburstmc.protocol.bedrock.packet.GameRulesChangedPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ItemComponentPacket;
+import org.cloudburstmc.protocol.bedrock.packet.LevelEventPacket;
+import org.cloudburstmc.protocol.bedrock.packet.LevelSoundEventPacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayerListPacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayerSkinPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetEntityDataPacket;
 import org.cloudburstmc.protocol.bedrock.packet.StartGamePacket;
 import org.cloudburstmc.protocol.bedrock.packet.SyncEntityPropertyPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UnlockedRecipesPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UpdateBlockPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UpdateSubChunkBlocksPacket;
+import org.cloudburstmc.protocol.common.util.TypeMap;
 import org.geysermc.geyser.inventory.InventoryHolder;
+import org.geysermc.geyser.level.block.Blocks;
 import org.geysermc.geyser.registry.type.BlockMappings;
 import org.geysermc.geyser.registry.type.GeyserBedrockBlock;
 import org.geysermc.geyser.session.GeyserSession;
@@ -95,6 +109,12 @@ public final class SpoofedUpstream extends UpstreamSession {
      * so duplicates are suppressed and changes are sent as REMOVE -> ADD -> Confirm.
      */
     private final Map<UUID, SerializedSkin> confirmedPlayerListSkins = new ConcurrentHashMap<>();
+    /** runtime entity id -> original Java entity identifier, for metadata fallbacks. */
+    private final Map<Long, String> entityFallbacks = new ConcurrentHashMap<>();
+    /** runtime entity id -> real name to show when a fallback entity has no name tag. */
+    private final Map<Long, String> entityFallbackNames = new ConcurrentHashMap<>();
+    /** Target codec's metadata type map, used to drop types the NetEase client cannot decode. */
+    private final EntityDataTypeMap entityDataTypeMap;
     /** Set once the Java server's locator_bar gamerule has been read for this session. */
     private volatile boolean locatorBarResolved;
 
@@ -121,6 +141,7 @@ public final class SpoofedUpstream extends UpstreamSession {
         this.itemTranslator = new NeteaseItemTranslator(actualProtocol, knownItems, placeholderItem,
             this::wrap, NeteaseFallbacks.itemFallbacks(actualProtocol), session.locale());
         this.uid = uid;
+        this.entityDataTypeMap = findEntityDataTypeMap(real.getCodecHelper());
     }
 
     @Override
@@ -141,6 +162,7 @@ public final class SpoofedUpstream extends UpstreamSession {
         if (rewritten == null) {
             return;
         }
+        sanitizeEntityPacket(rewritten);
         real.sendPacket(rewritten);
         afterSend(rewritten, false);
     }
@@ -158,6 +180,7 @@ public final class SpoofedUpstream extends UpstreamSession {
         if (rewritten == null) {
             return;
         }
+        sanitizeEntityPacket(rewritten);
         real.sendPacketImmediately(rewritten);
         afterSend(rewritten, true);
     }
@@ -178,13 +201,126 @@ public final class SpoofedUpstream extends UpstreamSession {
             return true;
         }
         //noinspection unchecked,rawtypes
-        if (codec.getPacketDefinition((Class) packet.getClass()) != null) {
+        if (codec.getPacketDefinition((Class) packet.getClass()) == null) {
+            if (packet instanceof io.netty.util.ReferenceCounted counted && counted.refCnt() > 0) {
+                counted.release();
+            }
+            return false;
+        }
+
+        // Newer sound/event enum values are not in the target codec's TypeMap and would throw
+        // while encoding. Dropping the individual packet is safer than killing the session.
+        if (packet instanceof LevelSoundEventPacket sound
+            && !supportsEvent(codec, packet, sound.getSound())) {
+            if (debug()) {
+                io.github.negeyser.NEGeyserExtension.LOG.info(
+                    "[NETEASE-PACKET] dropping unsupported sound " + sound.getSound());
+            }
+            return false;
+        }
+        if (packet instanceof LevelEventPacket event
+            && !supportsEvent(codec, packet, event.getType())) {
+            if (debug()) {
+                io.github.negeyser.NEGeyserExtension.LOG.info(
+                    "[NETEASE-PACKET] dropping unsupported level event " + event.getType());
+            }
+            return false;
+        }
+        if (packet instanceof EntityEventPacket event
+            && !supportsEvent(codec, packet, event.getType())) {
+            if (debug()) {
+                io.github.negeyser.NEGeyserExtension.LOG.info(
+                    "[NETEASE-PACKET] dropping unsupported entity event " + event.getType());
+            }
+            return false;
+        }
+        return true;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static boolean supportsEvent(BedrockCodec codec, BedrockPacket packet, Object value) {
+        BedrockPacketDefinition<?> definition =
+            codec.getPacketDefinition((Class) packet.getClass());
+        if (definition == null) {
+            return false;
+        }
+        TypeMap<?> typeMap = findTypeMap(definition.getSerializer());
+        if (typeMap == null) {
             return true;
         }
-        if (packet instanceof io.netty.util.ReferenceCounted counted && counted.refCnt() > 0) {
-            counted.release();
+        try {
+            return ((TypeMap) typeMap).getIdUnsafe(value) != -1;
+        } catch (Throwable ignored) {
+            return false;
         }
-        return false;
+    }
+
+    private static TypeMap<?> findTypeMap(Object serializer) {
+        if (serializer == null) {
+            return null;
+        }
+        for (Class<?> type = serializer.getClass(); type != null; type = type.getSuperclass()) {
+            try {
+                Field field = type.getDeclaredField("typeMap");
+                field.setAccessible(true);
+                Object value = field.get(serializer);
+                return value instanceof TypeMap<?> map ? map : null;
+            } catch (NoSuchFieldException ignored) {
+                // Continue up the hierarchy.
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static EntityDataTypeMap findEntityDataTypeMap(BedrockCodecHelper helper) {
+        if (helper == null) {
+            return null;
+        }
+        for (Class<?> type = helper.getClass(); type != null; type = type.getSuperclass()) {
+            try {
+                Field field = type.getDeclaredField("entityData");
+                field.setAccessible(true);
+                Object value = field.get(helper);
+                return value instanceof EntityDataTypeMap map ? map : null;
+            } catch (NoSuchFieldException ignored) {
+                // Continue up the hierarchy.
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Removes entity metadata types the target codec does not know, and clears entity properties
+     * whose SyncEntityProperty definitions are dropped for NetEase clients.
+     */
+    private void sanitizeEntityPacket(BedrockPacket packet) {
+        if (packet instanceof AddEntityPacket add) {
+            removeUnsupportedMetadata(add.getMetadata());
+            clearProperties(add.getProperties());
+        } else if (packet instanceof SetEntityDataPacket data) {
+            removeUnsupportedMetadata(data.getMetadata());
+            clearProperties(data.getProperties());
+        } else if (packet instanceof AddPlayerPacket player) {
+            removeUnsupportedMetadata(player.getMetadata());
+        }
+    }
+
+    private void removeUnsupportedMetadata(EntityDataMap metadata) {
+        EntityDataTypeMap map = entityDataTypeMap;
+        if (map == null || metadata == null || metadata.isEmpty()) {
+            return;
+        }
+        int before = metadata.size();
+        metadata.entrySet().removeIf(entry -> map.fromType(entry.getKey()) == null);
+        int removed = before - metadata.size();
+        if (removed > 0 && debug()) {
+            io.github.negeyser.NEGeyserExtension.LOG.info(
+                "[NETEASE-ENTITY] removed " + removed + " unsupported metadata type(s)");
+        }
     }
 
     @Override
@@ -298,6 +434,10 @@ public final class SpoofedUpstream extends UpstreamSession {
             if (filterItems() && !filterUnlockedRecipes(unlockedRecipes)) {
                 return null;
             }
+        } else if (packet instanceof AddEntityPacket addEntity) {
+            rewriteAddEntity(addEntity);
+        } else if (packet instanceof SetEntityDataPacket entityData) {
+            rewriteSetEntityData(entityData);
         } else if (packet instanceof ItemStackResponsePacket responses) {
             remapResponseContainers(responses);
             if (debug()) {
@@ -503,6 +643,153 @@ public final class SpoofedUpstream extends UpstreamSession {
         }
         return new BlockChangeEntry(entry.getPosition(), definition, entry.getUpdateFlags(),
             entry.getMessageEntityId(), entry.getMessageType());
+    }
+
+    /**
+     * Java 26.x introduced entities (and 1.21.11 introduced others) that the NetEase client's
+     * registry does not contain. Fall back to the closest vanilla entity and strip metadata
+     * that is invalid for that entity.
+     */
+    private void rewriteAddEntity(AddEntityPacket packet) {
+        String original = packet.getIdentifier();
+        EntityDataMap metadata = packet.getMetadata();
+        boolean boat = "minecraft:boat".equals(original) || "minecraft:chest_boat".equals(original);
+        Integer boatVariant = boat ? metadata.get(EntityDataTypes.VARIANT) : null;
+        boolean futureBoat = boatVariant != null && boatVariant >= 10;
+        String mapped = fallbackIdentifier(original);
+
+        if (!mapped.equals(original)) {
+            packet.setIdentifier(mapped);
+        }
+        if (futureBoat || !mapped.equals(original)) {
+            String realName = futureEntityName(original, boatVariant);
+            entityFallbackNames.put(packet.getRuntimeEntityId(), realName);
+            if (!hasName(metadata)) {
+                applyFallbackName(metadata, realName);
+            }
+            applyEntityFallbackMetadata(original, metadata, packet.getProperties());
+            entityFallbacks.put(packet.getRuntimeEntityId(), original);
+            if (debug()) {
+                io.github.negeyser.NEGeyserExtension.LOG.info("[NETEASE-ENTITY] "
+                    + original + " -> " + mapped + " name=" + realName
+                    + " runtime=" + packet.getRuntimeEntityId());
+            }
+        }
+    }
+
+    private void rewriteSetEntityData(SetEntityDataPacket packet) {
+        long runtimeId = packet.getRuntimeEntityId();
+        String original = entityFallbacks.get(runtimeId);
+        if (original == null) {
+            return;
+        }
+        String realName = entityFallbackNames.get(runtimeId);
+        if (realName != null && !hasName(packet.getMetadata())) {
+            applyFallbackName(packet.getMetadata(), realName);
+        }
+        applyEntityFallbackMetadata(original, packet.getMetadata(), packet.getProperties());
+    }
+
+    /**
+     * A fallback entity with a player-applied name tag keeps that name. Unnamed future entities
+     * get a permanent nameplate with their real (original) name so they can be identified.
+     */
+    private static boolean hasName(EntityDataMap metadata) {
+        Object name = metadata.get(EntityDataTypes.NAME);
+        return name != null && !name.toString().isBlank();
+    }
+
+    private static void applyFallbackName(EntityDataMap metadata, String name) {
+        metadata.put(EntityDataTypes.NAME, "§r" + name);
+        metadata.put(EntityDataTypes.NAMETAG_ALWAYS_SHOW, (byte) 1);
+        metadata.setFlag(EntityFlag.CAN_SHOW_NAME, true);
+    }
+
+    private static String futureEntityName(String identifier, Integer boatVariant) {
+        if ("minecraft:boat".equals(identifier) || "minecraft:chest_boat".equals(identifier)) {
+            boolean chest = identifier.endsWith("chest_boat");
+            if (boatVariant != null && boatVariant == 10) {
+                return chest ? "Poplar Chest Boat" : "Poplar Boat";
+            }
+            return chest ? "Chest Boat" : "Boat";
+        }
+
+        String path = identifier.startsWith("minecraft:")
+            ? identifier.substring("minecraft:".length()) : identifier;
+        StringBuilder result = new StringBuilder(path.length());
+        for (String part : path.split("_")) {
+            if (part.isEmpty()) {
+                continue;
+            }
+            if (!result.isEmpty()) {
+                result.append(' ');
+            }
+            result.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return result.isEmpty() ? identifier : result.toString();
+    }
+
+    private String fallbackIdentifier(String identifier) {
+        return switch (identifier) {
+            case "minecraft:cushion" -> "minecraft:falling_block";
+            case "minecraft:sulfur_cube" -> "minecraft:slime";
+            case "minecraft:nautilus" -> actualProtocol <= 860
+                ? "minecraft:squid" : identifier;
+            case "minecraft:zombie_nautilus" -> actualProtocol <= 860
+                ? "minecraft:glow_squid" : identifier;
+            case "minecraft:camel_husk" -> actualProtocol <= 860
+                ? "minecraft:camel" : identifier;
+            case "minecraft:parched" -> actualProtocol <= 860
+                ? "minecraft:skeleton" : identifier;
+            default -> identifier;
+        };
+    }
+
+    private void applyEntityFallbackMetadata(String original, EntityDataMap metadata,
+                                             EntityProperties properties) {
+        switch (original) {
+            case "minecraft:cushion" -> {
+                // Falling blocks render the carpet we select; cushion dye color is not valid on it.
+                metadata.remove(EntityDataTypes.VARIANT);
+                BlockDefinition carpet = mappings.getBedrockBlock(Blocks.WHITE_CARPET.defaultBlockState());
+                if (carpet != null) {
+                    metadata.put(EntityDataTypes.BLOCK, carpet);
+                }
+            }
+            case "minecraft:sulfur_cube" -> {
+                metadata.remove(EntityDataTypes.FUSE_TIME);
+                clearProperties(properties);
+            }
+            case "minecraft:nautilus", "minecraft:zombie_nautilus" -> {
+                metadata.remove(EntityDataTypes.CONTAINER_SIZE);
+                clearProperties(properties);
+            }
+            case "minecraft:camel_husk", "minecraft:parched" -> clearProperties(properties);
+            case "minecraft:boat", "minecraft:chest_boat" -> clampBoatVariant(metadata);
+            default -> {
+                // No metadata changes.
+            }
+        }
+    }
+
+    private void clampBoatVariant(EntityDataMap metadata) {
+        Integer variant = metadata.get(EntityDataTypes.VARIANT);
+        if (variant == null) {
+            return;
+        }
+        // POPLAR is ordinal 10. 1.21.130 knows PALE_OAK (9); older targets fall back to BIRCH (2).
+        int maxVariant = actualProtocol >= 898 ? 9 : 2;
+        if (variant > maxVariant) {
+            metadata.put(EntityDataTypes.VARIANT, maxVariant);
+        }
+    }
+
+    private static void clearProperties(EntityProperties properties) {
+        if (properties == null) {
+            return;
+        }
+        properties.getIntProperties().clear();
+        properties.getFloatProperties().clear();
     }
 
     private BlockDefinition wrap(BlockDefinition definition) {

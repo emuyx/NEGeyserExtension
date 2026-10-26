@@ -117,6 +117,52 @@ public final class NeteaseFallbacks {
             return known("minecraft:trident", knownItems) ? "minecraft:trident"
                 : known("minecraft:iron_sword", knownItems) ? "minecraft:iron_sword" : null;
         }
+        if (name.endsWith("_nautilus_armor")) {
+            String baseName = name.substring(0, name.length() - "_nautilus_armor".length());
+            if ("netherite".equals(baseName)) {
+                baseName = "leather";
+            }
+            String armor = "minecraft:" + baseName + "_horse_armor";
+            if (known(armor, knownItems)) {
+                return armor;
+            }
+        }
+        if ("netherite_horse_armor".equals(name)
+            && known("minecraft:leather_horse_armor", knownItems)) {
+            return "minecraft:leather_horse_armor";
+        }
+        if (name.endsWith("_spawn_egg")) {
+            String mapped = switch (name) {
+                case "nautilus_spawn_egg" -> "squid_spawn_egg";
+                case "zombie_nautilus_spawn_egg" -> "glow_squid_spawn_egg";
+                case "camel_husk_spawn_egg" -> "camel_spawn_egg";
+                case "parched_spawn_egg" -> "skeleton_spawn_egg";
+                case "sulfur_cube_spawn_egg" -> "slime_spawn_egg";
+                default -> null;
+            };
+            if (mapped != null && known("minecraft:" + mapped, knownItems)) {
+                return "minecraft:" + mapped;
+            }
+        }
+        if ("sulfur_cube_bucket".equals(name)
+            && known("minecraft:powder_snow_bucket", knownItems)) {
+            return "minecraft:powder_snow_bucket";
+        }
+        if ("music_disc_bounce".equals(name)
+            && known("minecraft:music_disc_13", knownItems)) {
+            return "minecraft:music_disc_13";
+        }
+        if ("sulfur_spike".equals(name)
+            && known("minecraft:pointed_dripstone", knownItems)) {
+            return "minecraft:pointed_dripstone";
+        }
+        if ("golden_dandelion".equals(name)
+            && known("minecraft:dandelion", knownItems)) {
+            return "minecraft:dandelion";
+        }
+        if (name.endsWith("_map") && known("minecraft:filled_map", knownItems)) {
+            return "minecraft:filled_map";
+        }
         if (name.startsWith("copper_")) {
             String iron = "minecraft:iron_" + name.substring("copper_".length());
             if (known(iron, knownItems)) {

@@ -57,6 +57,7 @@ extensions/
 - 把 Geyser 的 `geyser_custom:obsidian` / `crying_obsidian` 数据驱动方块映射回原版方块
   （之前会显示为石头）；
 - 定位条跟随 Java 的 `locator_bar` gamerule；
+- 被降级替换且未使用命名牌的实体，会常驻显示其真实名称；玩家命名牌优先；
 - 可选的按客户端类型分流资源包。
 
 ## 前置要求
@@ -97,8 +98,17 @@ allow-single-chain: false
 # 为空时接受任意来源并输出警告；此时不要把基岩端口直接暴露公网。
 trusted-relay-addresses: ""
 
-# 单段链会话所有资源包分片发送完成后，等待多久再发送 ResourcePackStack（毫秒）。
-single-chain-pack-stack-delay-ms: 1000
+# 单段链会话所有已请求资源包的分片发送完成后，等待多久再发送 ResourcePackStack（毫秒）。
+single-chain-pack-stack-delay-ms: 2000
+
+# 发送 DataInfo 后，若在该时间内没有任何分片请求，视为所有包已缓存，直接发送 Stack（毫秒）。
+single-chain-pack-fallback-ms: 3000
+
+# 等待已请求分片的最长时间；超时后即使仍有包未完成也发送 Stack（毫秒）。
+single-chain-pack-max-wait-ms: 10000
+
+# 对单段链客户端重复请求的同一分片重新发送（默认开启）。
+single-chain-resend-chunks: true
 
 # 网易客户端资源包分片之间的延迟（毫秒）。设为 0 关闭。
 resource-pack-chunk-delay-ms: 200
@@ -134,8 +144,17 @@ translate-netease-names: false
 三段链仍走原来的逐级验签、网易根证书检查和身份取值逻辑，国际版客户端完全不受影响。
 
 单段链会话还会启用资源包 early-3 处理：当客户端在尚未下载资源包时直接回复
-`HAVE_ALL_PACKS`（状态 3），扩展会先发送每个包的 `ResourcePackDataInfo`，等待分片下载完成，
-再延迟 `single-chain-pack-stack-delay-ms` 后发送 `ResourcePackStack`。
+`HAVE_ALL_PACKS`（状态 3），扩展会先为每个包发送 `ResourcePackDataInfo`，然后：
+
+- 只等待客户端**实际请求过分片**的包；已有缓存的包不会阻塞 Stack；
+- `single-chain-pack-fallback-ms` 内没有任何分片请求时，视为全部命中缓存，直接发送 Stack；
+- 已请求的包全部分片发送完成后，等待 `single-chain-pack-stack-delay-ms` 再发送 Stack；
+- 从 DataInfo 发出开始最多等待 `single-chain-pack-max-wait-ms`，超时也会发送 Stack，并记录
+  仍未完成的包；
+- `single-chain-resend-chunks` 开启时，重复请求的同一分片会被重新发送。
+
+如果个别玩家在收到 Stack 后仍然超时，可把 `single-chain-pack-stack-delay-ms` 调到 3000
+再观察。
 
 ### 资源包分流
 
@@ -181,7 +200,8 @@ Geyser、Cloudburst Protocol、Netty、fastutil、jose4j、Gson 均由 Geyser �
 
 把扩展配置中的 `debug-mode` 设为 `true`，日志会输出 `[NETEASE-TRACE]` 管线阶段，以及
 `[NETEASE-ITEM]`、`[NETEASE-RECIPE]`、`[NETEASE-REQ]` / `[NETEASE-RESP]`、
-`[NETEASE-SKIN]`、`[NETEASE-PACKS]`、`[NETEASE-GAMERULE]`、`[NETEASE-BLOCK]` 等诊断信息。
+`[NETEASE-SKIN]`、`[NETEASE-PACKS]`、`[NETEASE-GAMERULE]`、`[NETEASE-BLOCK]`、
+`[NETEASE-ENTITY]`、`[NETEASE-PACKET]` 等诊断信息。
 公开反馈问题时请不要附带令牌、证书、服务器地址或玩家名称。
 
 ## 已知限制
@@ -192,7 +212,7 @@ Geyser、Cloudburst Protocol、Netty、fastutil、jose4j、Gson 均由 Geyser �
   生物群系和配方可能不完整。
 - 书与笔的编辑/签名暂时不能正确保存。
 - 实体 metadata 尚未按客户端版本过滤；新实体类型或 metadata 可能表现异常。
-- 收纳袋/动态容器（DYNAMIC_CONTAINER）的堆叠请求尚未完全验证。
+- 收纳袋/动态容器（DYNAMIC_CONTAINER）的线格式（网易 ID 64）已支持，具体交互仍未逐项实测。
 - 不支持仅 `transport: nethernet`；请使用 `raknet` 或 `both`。
 - `/geyser reload` 会重新绑定监听器，出现异常时完整重启更稳妥。
 - 扩展通过 `sun.misc.Unsafe` 注入会话上游包装器和方块映射副本；升级 Geyser 大版本后需重新

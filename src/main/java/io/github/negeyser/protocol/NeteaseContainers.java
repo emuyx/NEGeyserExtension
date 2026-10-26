@@ -5,8 +5,12 @@
 
 package io.github.negeyser.protocol;
 
+import org.cloudburstmc.protocol.bedrock.codec.BedrockCodecHelper;
 import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerSlotType;
+import org.cloudburstmc.protocol.common.util.TypeMap;
+import sun.misc.Unsafe;
 
+import java.lang.reflect.Field;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -101,6 +105,9 @@ public final class NeteaseContainers {
 
     private static final Map<ContainerSlotType, Integer> WIRE_IDS = new EnumMap<>(ContainerSlotType.class);
 
+    private static volatile boolean installed;
+    private static volatile boolean warned;
+
     static {
         for (int i = 0; i < WIRE_ORDER.size(); i++) {
             WIRE_IDS.put(WIRE_ORDER.get(i), i);
@@ -111,10 +118,76 @@ public final class NeteaseContainers {
     }
 
     /**
+     * Replaces the codec helper's container slot TypeMap with one that speaks NetEase wire
+     * ids directly, including wire id 64 ({@code DYNAMIC_CONTAINER}), which the vanilla map
+     * does not contain and would throw on while decoding bundle interactions.
+     *
+     * <p>If this cannot be installed (for example because a future Geyser renamed the field),
+     * the old post-decode/pre-encode shift helpers below are kept as a fallback.</p>
+     */
+    public static void install(BedrockCodecHelper helper) {
+        try {
+            TypeMap<ContainerSlotType> map = buildWireMap();
+            setContainerSlotTypes(helper, map);
+            boolean wasInstalled = installed;
+            installed = true;
+            if (!wasInstalled && io.github.negeyser.NEGeyserExtension.LOG != null) {
+                io.github.negeyser.NEGeyserExtension.LOG.info(
+                    "[NETEASE-CONTAINER] installed NetEase container slot ids (0-64)");
+            }
+        } catch (Throwable e) {
+            // Keep a previous successful installation; only fall back if none worked.
+            if (!installed && !warned && io.github.negeyser.NEGeyserExtension.LOG != null) {
+                warned = true;
+                io.github.negeyser.NEGeyserExtension.LOG.warning(
+                    "Could not install the NetEase container slot map; falling back to "
+                        + "post-decode translation: " + e.getMessage());
+            }
+        }
+    }
+
+    private static TypeMap<ContainerSlotType> buildWireMap() {
+        TypeMap.Builder<ContainerSlotType> builder = TypeMap.builder(ContainerSlotType.class);
+        // NetEase inserts RECIPE_CUSTOM at wire id 17; vanilla has no matching enum value.
+        builder.insert(SHIFT_INDEX, ContainerSlotType.UNKNOWN);
+        for (int i = 0; i < WIRE_ORDER.size(); i++) {
+            int wireId = i >= SHIFT_INDEX ? i + 1 : i;
+            builder.insert(wireId, WIRE_ORDER.get(i));
+        }
+        return builder.build();
+    }
+
+    private static void setContainerSlotTypes(BedrockCodecHelper helper,
+                                              TypeMap<ContainerSlotType> map) throws Exception {
+        Field field = null;
+        for (Class<?> type = helper.getClass(); type != null; type = type.getSuperclass()) {
+            try {
+                field = type.getDeclaredField("containerSlotTypes");
+                break;
+            } catch (NoSuchFieldException ignored) {
+                // Continue up the hierarchy.
+            }
+        }
+        if (field == null) {
+            throw new NoSuchFieldException("containerSlotTypes");
+        }
+        UnsafeHolder.UNSAFE.putObject(helper,
+            UnsafeHolder.UNSAFE.objectFieldOffset(field), map);
+    }
+
+    public static boolean isInstalled() {
+        return installed;
+    }
+
+    /**
      * Maps a container decoded by the vanilla codec back to the container the NetEase client
-     * meant. Wire index 17 is the NetEase-only RECIPE_CUSTOM and is left unchanged.
+     * meant. When the custom wire map is installed this is already handled by the codec.
+     * Wire index 17 is the NetEase-only RECIPE_CUSTOM and is left unchanged.
      */
     public static ContainerSlotType fromWireDecoded(ContainerSlotType decoded) {
+        if (installed) {
+            return decoded;
+        }
         Integer wireId = WIRE_IDS.get(decoded);
         if (wireId == null || wireId <= SHIFT_INDEX) {
             return decoded;
@@ -124,13 +197,30 @@ public final class NeteaseContainers {
 
     /**
      * Maps a semantic container to the value the vanilla codec must encode so the NetEase
-     * client decodes it as the intended container.
+     * client decodes it as the intended container. No-op when the custom wire map is installed.
      */
     public static ContainerSlotType toWireDecoded(ContainerSlotType semantic) {
+        if (installed) {
+            return semantic;
+        }
         Integer wireId = WIRE_IDS.get(semantic);
         if (wireId == null || wireId < SHIFT_INDEX || wireId + 1 >= WIRE_ORDER.size()) {
             return semantic;
         }
         return WIRE_ORDER.get(wireId + 1);
+    }
+
+    private static final class UnsafeHolder {
+        private static final Unsafe UNSAFE;
+
+        static {
+            try {
+                Field field = Unsafe.class.getDeclaredField("theUnsafe");
+                field.setAccessible(true);
+                UNSAFE = (Unsafe) field.get(null);
+            } catch (Throwable e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
     }
 }

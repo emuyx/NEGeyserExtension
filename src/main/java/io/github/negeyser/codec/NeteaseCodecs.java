@@ -24,7 +24,11 @@ import io.github.negeyser.codec.serializer.NeteaseTextSerializer;
 import io.github.negeyser.codec.serializer.PyRpcSerializer;
 import io.github.negeyser.codec.serializer.SetDimensionLocalTimeSerializer;
 import io.github.negeyser.codec.serializer.StoreBuySuccessSerializer;
+import io.github.negeyser.protocol.NeteaseContainers;
+import io.github.negeyser.protocol.NeteaseParticles;
 import org.cloudburstmc.protocol.bedrock.codec.BedrockCodec;
+import org.cloudburstmc.protocol.bedrock.codec.EntityDataTypeMap;
+import org.cloudburstmc.protocol.bedrock.codec.v291.serializer.LevelEventSerializer_v291;
 import org.cloudburstmc.protocol.bedrock.codec.v361.serializer.ClientCacheStatusSerializer_v361;
 import org.cloudburstmc.protocol.bedrock.codec.v819.Bedrock_v819;
 import org.cloudburstmc.protocol.bedrock.codec.v860.Bedrock_v860;
@@ -37,6 +41,7 @@ import org.cloudburstmc.protocol.bedrock.packet.BiomeDefinitionListPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ClientCacheStatusPacket;
 import org.cloudburstmc.protocol.bedrock.packet.CommandRequestPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ContainerOpenPacket;
+import org.cloudburstmc.protocol.bedrock.packet.LevelEventPacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayerAuthInputPacket;
 import org.cloudburstmc.protocol.bedrock.packet.PlayerEnchantOptionsPacket;
 import org.cloudburstmc.protocol.bedrock.packet.ResourcePackStackPacket;
@@ -72,17 +77,30 @@ public final class NeteaseCodecs {
     }
 
     private static BedrockCodec build(BedrockCodec base, int protocolVersion) {
+        // NetEase clients shift particle ids after SNEEZE by one (Nukkit-MOT Particle#getMultiversionId).
+        // Build the shifted maps once and reuse them for every helper of this codec.
+        NeteaseParticles.Maps particleMaps = NeteaseParticles.build(base);
+        EntityDataTypeMap particleEntityData = particleMaps == null ? null
+            : NeteaseParticles.shiftedEntityData(base.createHelper(), particleMaps.particles());
+
         BedrockCodec.Builder builder = base.toBuilder()
             .raknetProtocolVersion(8)
             .helper(() -> {
                 BedrockCodecHelper helper = base.createHelper();
                 helper.setEncodingSettings(EncodingSettings.CLIENT);
+                NeteaseContainers.install(helper);
+                NeteaseParticles.installEntityData(helper, particleEntityData);
                 return helper;
             })
             .updateSerializer(PlayerAuthInputPacket.class, NeteasePlayerAuthInputSerializer.INSTANCE)
             .updateSerializer(TextPacket.class, protocolVersion >= 898 ? NeteaseTextSerializer.V898 : NeteaseTextSerializer.LEGACY)
             .updateSerializer(ClientCacheStatusPacket.class, ClientCacheStatusSerializer_v361.INSTANCE)
             .updateSerializer(PlayerEnchantOptionsPacket.class, NeteaseEnchantOptionsSerializer.INSTANCE);
+
+        if (particleMaps != null) {
+            builder.updateSerializer(LevelEventPacket.class,
+                new LevelEventSerializer_v291(particleMaps.levelEvents()));
+        }
 
         if (protocolVersion >= 860) {
             builder.updateSerializer(BiomeDefinitionListPacket.class, NeteaseBiomeDefinitionListSerializer.V860.INSTANCE);

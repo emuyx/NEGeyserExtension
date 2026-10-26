@@ -346,6 +346,14 @@ public class UpstreamHandlerBase extends LoggingPacketHandler {
     }
 
     protected void sendChunk(ResourcePackChunkRequestPacket packet) {
+        sendChunk(packet, false);
+    }
+
+    /**
+     * @param allowResend when true, a chunk index that was already sent is transmitted again.
+     *                    Used only by the single-chain early-3 flow to recover from lost chunks.
+     */
+    protected void sendChunk(ResourcePackChunkRequestPacket packet, boolean allowResend) {
         ResourcePackHolder holder = this.resourcePackLoadEvent.getPacks().get(packet.getPackId());
         if (holder == null) {
             GeyserImpl.getInstance().getLogger().debug("Client %s tried to request pack id %s not sent to it!",
@@ -371,7 +379,7 @@ public class UpstreamHandlerBase extends LoggingPacketHandler {
         int index = packet.getChunkIndex();
         long offset = (long) index * GeyserResourcePack.CHUNK_SIZE;
         BitSet sent = sentChunks.computeIfAbsent(packet.getPackId(), id -> new BitSet());
-        if (index < 0 || offset >= codec.size() || sent.get(index)) {
+        if (index < 0 || offset >= codec.size() || (!allowResend && sent.get(index))) {
             return;
         }
         sent.set(index);

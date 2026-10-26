@@ -53,18 +53,35 @@ public final class NeteaseBlocks {
 
             String rawName = state.getString("name", "");
             String name = vanillaName(rawName);
-            List<State> candidates = byName.get(name);
-            if (candidates != null && !candidates.isEmpty()) {
-                State best = choose(candidates, state);
-                if (best != null) {
-                    if (!name.equals(rawName) && debug()) {
+            State mapped = find(name, state);
+            if (mapped == null) {
+                // Reuse Geyser's WildernessBoundConverter table (e.g. poplar -> pale oak,
+                // cushion -> carpet, sulfur/cinnabar -> older blocks) before giving up.
+                String fallbackName = NeteaseFallbacks.blockFallback(name);
+                if (!fallbackName.equals(name)) {
+                    mapped = find(fallbackName, state);
+                    if (mapped != null && debug()) {
                         io.github.negeyser.NEGeyserExtension.LOG.info(
-                            "[NETEASE-BLOCK] custom block " + rawName + " -> " + name);
+                            "[NETEASE-BLOCK] fallback " + rawName + " -> " + fallbackName);
                     }
-                    return new GeyserBedrockBlock(best.hash, best.nbt);
                 }
             }
+            if (mapped != null) {
+                if (!name.equals(rawName) && debug()) {
+                    io.github.negeyser.NEGeyserExtension.LOG.info(
+                        "[NETEASE-BLOCK] custom block " + rawName + " -> " + name);
+                }
+                return new GeyserBedrockBlock(mapped.hash, mapped.nbt);
+            }
             return fallback;
+        }
+
+        private State find(String name, NbtMap state) {
+            List<State> candidates = byName.get(name);
+            if (candidates == null || candidates.isEmpty()) {
+                return null;
+            }
+            return choose(candidates, state);
         }
 
         private static boolean debug() {

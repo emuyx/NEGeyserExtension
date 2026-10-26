@@ -49,7 +49,19 @@ public final class NeteaseConfigLoader {
             # How long to wait after all resource pack chunks are sent before sending the
             # resource pack stack for single-chain room sessions, in milliseconds. Those
             # relays acknowledge packs early, so the client needs the download to finish first.
-            single-chain-pack-stack-delay-ms: 1000
+            single-chain-pack-stack-delay-ms: 2000
+
+            # If no chunk request arrives within this time after ResourcePackDataInfo was sent,
+            # treat every advertised pack as already cached and send the stack. In milliseconds.
+            single-chain-pack-fallback-ms: 3000
+
+            # Upper bound for waiting on requested chunks before sending the stack anyway.
+            # In milliseconds. Prevents a stuck/slow client from blocking login forever.
+            single-chain-pack-max-wait-ms: 10000
+
+            # Resend a chunk if the single-chain client requests the same index again.
+            # Helps clients that lost a chunk or timed out mid-download.
+            single-chain-resend-chunks: true
 
             # Delay between resource pack chunks sent to NetEase clients, in milliseconds.
             # NetEase clients are slower at downloading packs. 0 disables the delay.
@@ -162,6 +174,21 @@ public final class NeteaseConfigLoader {
                         // Keep default.
                     }
                 }
+                case "single-chain-pack-fallback-ms" -> {
+                    try {
+                        config.setSingleChainPackFallbackMs(Math.max(0, Integer.parseInt(value)));
+                    } catch (NumberFormatException ignored) {
+                        // Keep default.
+                    }
+                }
+                case "single-chain-pack-max-wait-ms" -> {
+                    try {
+                        config.setSingleChainPackMaxWaitMs(Math.max(0, Integer.parseInt(value)));
+                    } catch (NumberFormatException ignored) {
+                        // Keep default.
+                    }
+                }
+                case "single-chain-resend-chunks" -> config.setSingleChainResendChunks(parseBoolean(value));
                 case "filter-unknown-items" -> config.setFilterUnknownItems(parseBoolean(value));
                 case "strip-item-nbt" -> config.setStripItemNbt(parseBoolean(value));
                 case "extra-item-nbt" -> {

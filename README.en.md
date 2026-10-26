@@ -68,6 +68,8 @@ The extension also handles client-specific quirks discovered during testing:
 - Geyser's data-driven `geyser_custom:obsidian` / `crying_obsidian` blocks are aliased
   back to the client's vanilla blocks (they previously fell back to stone).
 - The locator bar follows the Java `locator_bar` gamerule instead of staying on.
+- Unnamed entities that had to be replaced with an older-version fallback get an
+  always-visible nameplate with their real name; player-applied name tags take priority.
 - Optional per-client-type resource pack routing.
 
 ## Requirements
@@ -110,9 +112,20 @@ allow-single-chain: false
 # Bedrock port directly to the internet in that case.
 trusted-relay-addresses: ""
 
-# Delay after all pack chunks before sending ResourcePackStack for single-chain
-# sessions, in milliseconds.
-single-chain-pack-stack-delay-ms: 1000
+# Delay after all requested pack chunks before sending ResourcePackStack for
+# single-chain sessions, in milliseconds.
+single-chain-pack-stack-delay-ms: 2000
+
+# If no chunk request arrives within this time after ResourcePackDataInfo was sent,
+# treat every advertised pack as cached and send the stack (milliseconds).
+single-chain-pack-fallback-ms: 3000
+
+# Upper bound for waiting on requested chunks; the stack is sent after this even if
+# some requested packs are incomplete (milliseconds).
+single-chain-pack-max-wait-ms: 10000
+
+# Resend a chunk if a single-chain client requests the same index again.
+single-chain-resend-chunks: true
 
 # Delay between resource pack chunks for NetEase clients, in milliseconds.
 resource-pack-chunk-delay-ms: 200
@@ -144,6 +157,23 @@ skips the NetEase root check, and requires `netease_uid` or `netease_uuid` in
 
 Three-element chains keep their original validation, identity extraction and Floodgate
 UUID behaviour.
+
+Single-chain sessions also enable early-3 resource pack handling: when the client
+replies `HAVE_ALL_PACKS` (status 3) before downloading anything, the extension sends a
+`ResourcePackDataInfo` for every advertised pack, then:
+
+- waits only for packs the client actually requests chunks for; cached packs never block
+  the stack;
+- if no chunk request arrives within `single-chain-pack-fallback-ms`, treats every pack
+  as cached and sends the stack immediately;
+- after all requested packs complete, waits `single-chain-pack-stack-delay-ms` before
+  sending the stack;
+- waits at most `single-chain-pack-max-wait-ms` from the DataInfo send; the stack is sent
+  anyway on timeout, with the still-pending packs logged;
+- with `single-chain-resend-chunks` enabled, duplicate chunk requests are served again.
+
+If individual players still time out after receiving the stack, try raising
+`single-chain-pack-stack-delay-ms` to 3000.
 
 ### Resource pack routing
 
@@ -189,7 +219,8 @@ name transliteration.
 Set `debug-mode: true` in the extension config (and optionally in Geyser's config). The
 extension logs `[NETEASE-TRACE]` pipeline stages, `[NETEASE-ITEM]`, `[NETEASE-RECIPE]`,
 `[NETEASE-REQ]` / `[NETEASE-RESP]`, `[NETEASE-SKIN]`, `[NETEASE-PACKS]`,
-`[NETEASE-GAMERULE]` and `[NETEASE-BLOCK]` diagnostics. Do not paste tokens,
+`[NETEASE-GAMERULE]`, `[NETEASE-BLOCK]`, `[NETEASE-ENTITY]` and `[NETEASE-PACKET]`
+diagnostics. Do not paste tokens,
 certificates, server addresses or player names into public issues.
 
 ## Known limitations
@@ -203,8 +234,8 @@ certificates, server addresses or player names into public issues.
 - Book and quill editing/signing does not persist correctly yet.
 - Entity metadata is not filtered per client version; newly added entity types or
   metadata may misbehave.
-- Bundle/dynamic-container stack requests are not fully verified (the NetEase wire
-  container id for dynamic containers is outside the vanilla codec's map).
+- Bundle/dynamic-container wire ids (NetEase id 64) are supported; individual bundle
+  interactions are not fully verified yet.
 - Do not use NetherNet (`transport: nethernet`) only; use `raknet` or `both`.
 - `/geyser reload` rebinds the listener. If anything looks wrong, a full restart is
   safer.
