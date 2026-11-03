@@ -5,6 +5,8 @@
 
 package io.github.negeyser;
 
+import io.github.negeyser.api.NEGeyserApiProvider;
+import io.github.negeyser.api.NeteasePlayerRegistry;
 import io.github.negeyser.config.NeteaseConfig;
 import io.github.negeyser.config.NeteaseConfigLoader;
 import io.github.negeyser.network.ListenerRestarter;
@@ -12,6 +14,7 @@ import io.github.negeyser.protocol.NeteaseGameRules;
 import io.github.negeyser.protocol.NeteaseRegistries;
 import io.github.negeyser.protocol.NeteaseResourcePacks;
 import org.geysermc.event.subscribe.Subscribe;
+import org.geysermc.geyser.api.event.bedrock.SessionDisconnectEvent;
 import org.geysermc.geyser.api.event.bedrock.SessionJoinEvent;
 import org.geysermc.geyser.api.event.bedrock.SessionLoadResourcePacksEvent;
 import org.geysermc.geyser.api.event.lifecycle.GeyserPostInitializeEvent;
@@ -51,9 +54,17 @@ public final class NEGeyserExtension implements Extension {
         NeteaseResourcePacks.apply(event);
     }
 
+    @Subscribe
+    public void onSessionDisconnect(SessionDisconnectEvent event) {
+        if (event.connection() instanceof GeyserSession session) {
+            NeteasePlayerRegistry.unregister(session);
+        }
+    }
+
     private void start(String reason) {
         LOG = logger();
         CONFIG = NeteaseConfigLoader.load(this);
+        NEGeyserApiProvider.installDefault();
 
         LOG.info("NEGeyserExtension is starting (" + reason + ").");
 

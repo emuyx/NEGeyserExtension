@@ -13,6 +13,7 @@ Bedrock** join the same server as international Bedrock and Java players.
   and their client data is passed through like a regular Bedrock player.
 - International Bedrock and Java players keep using Geyser's normal login, codec and
   registry paths.
+- Other Geyser extensions can query NetEase player information: see [API.en.md](API.en.md).
 
 > This is a community project. It is not affiliated with, endorsed by, or supported by
 > GeyserMC, Mojang, Microsoft or NetEase.

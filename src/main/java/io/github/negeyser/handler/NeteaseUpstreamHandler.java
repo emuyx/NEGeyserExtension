@@ -6,6 +6,7 @@
 package io.github.negeyser.handler;
 
 import io.github.negeyser.NEGeyserExtension;
+import io.github.negeyser.api.NeteasePlayerRegistry;
 import io.github.negeyser.codec.NeteaseCodecs;
 import io.github.negeyser.codec.NeteaseCompression;
 import io.github.negeyser.protocol.BlockMappingsPatcher;
@@ -266,6 +267,14 @@ public final class NeteaseUpstreamHandler extends UpstreamHandlerBase {
 
         session.setAuthData(new AuthData(displayName, profile.identity(), profile.xuid(),
             profile.issuedAt(), ""));
+        try {
+            NeteasePlayerRegistry.register(session, profile, singleChainLogin,
+                neteaseSession.protocolVersion());
+        } catch (Throwable e) {
+            if (debug()) {
+                NEGeyserExtension.LOG.warning("[NETEASE-API] could not register player info: " + e);
+            }
+        }
         session.setCertChainData(chain.getChain());
 
         BedrockClientData clientData = null;

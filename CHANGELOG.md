@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 (2026-11-03)
 
+- Exposed a read-only API for other Geyser extensions (`io.github.negeyser.api`):
+  `NEGeyserApi` / `NeteasePlayerInfo` with `isNetease`, `getPlayerInfo` and
+  `getOnlinePlayers`, plus the `negeyser` extension dependency. See `API.md`.
 - Fixed NetEase 3.10 player chat not being visible (only system messages appeared).
   Player `TextPacket.Type.CHAT` messages are now downgraded to `SYSTEM` for protocol 898,
   matching the existing 819/860 behaviour; the Geyser message already contains the sender
