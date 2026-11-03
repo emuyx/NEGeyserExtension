@@ -26,7 +26,7 @@ import org.geysermc.geyser.GeyserImpl;
 import org.geysermc.geyser.network.bedrock.raknet.RakServerInitializer;
 import org.geysermc.geyser.network.bedrock.GeyserBedrockPeer;
 import org.geysermc.geyser.network.bedrock.InvalidPacketHandler;
-import org.geysermc.geyser.network.bedrock.UpstreamPacketHandler;
+import org.geysermc.geyser.network.bedrock.LoginPacketHandler;
 import org.geysermc.geyser.session.GeyserSession;
 
 /**
@@ -82,11 +82,20 @@ public final class NeteaseServerInitializer extends RakServerInitializer {
 
             if (!bedrockServerSession.isSubClient()) {
                 Channel channel = bedrockServerSession.getPeer().getChannel();
-                try {
-                    channel.pipeline().addAfter(BedrockPeer.NAME, InvalidPacketHandler.NAME,
-                        new InvalidPacketHandler(session));
-                } catch (Exception ignored) {
-                    // Handler already present.
+                // Geyser 2.12.1 adds InvalidPacketHandler in postInitChannel, before initSession.
+                // Reuse it and attach the session instead of trying to add a duplicate handler.
+                InvalidPacketHandler invalidPacketHandler = channel.pipeline().get(InvalidPacketHandler.class);
+                if (invalidPacketHandler == null) {
+                    invalidPacketHandler = new InvalidPacketHandler();
+                    try {
+                        channel.pipeline().addAfter(BedrockPeer.NAME, InvalidPacketHandler.NAME,
+                            invalidPacketHandler);
+                    } catch (Exception ignored) {
+                        invalidPacketHandler = channel.pipeline().get(InvalidPacketHandler.class);
+                    }
+                }
+                if (invalidPacketHandler != null) {
+                    invalidPacketHandler.setSession(session);
                 }
             }
 
@@ -96,7 +105,9 @@ public final class NeteaseServerInitializer extends RakServerInitializer {
                     installOutboundTrace(bedrockServerSession.getPeer().getChannel());
                 }
             } else {
-                bedrockServerSession.setPacketHandler(new UpstreamPacketHandler(geyser, session));
+                // Geyser 2.12.1 split login into LoginPacketHandler, which hands the connection
+                // to UpstreamPacketHandler once authentication completes.
+                bedrockServerSession.setPacketHandler(new LoginPacketHandler(geyser, session));
             }
         } catch (Throwable e) {
             geyser.getLogger().error("Error occurred while initializing player!", e);

@@ -24,7 +24,7 @@ repositories {
 
 dependencies {
     // Geyser and everything it already provides at runtime. Never bundled.
-    compileOnly("org.geysermc.geyser:core:2.12.0-SNAPSHOT")
+    compileOnly("org.geysermc.geyser:core:2.12.1-SNAPSHOT")
 
     // Geyser declares its fastutil modules at runtime scope, so they are not on the
     // compile-only classpath automatically.

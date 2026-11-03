@@ -16,6 +16,7 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import org.cloudburstmc.netty.channel.raknet.RakChannelFactory;
+import org.cloudburstmc.netty.channel.raknet.config.RakChannelOption;
 import org.cloudburstmc.netty.handler.codec.raknet.server.RakServerOfflineHandler;
 import org.geysermc.geyser.GeyserImpl;
 import org.geysermc.geyser.configuration.GeyserConfig;
@@ -93,6 +94,11 @@ public final class ListenerRestarter {
         if (originalConfig.handler() != null) {
             bootstrap.handler(originalConfig.handler());
         }
+
+        // Geyser 2.12.1 pins RakNet to protocol 11, which would reject NetEase clients (protocol 8)
+        // before they ever reach NeteaseServerInitializer. Keep both protocols on the shared port.
+        bootstrap.option(RakChannelOption.RAK_SUPPORTED_PROTOCOLS,
+            new int[]{NeteaseServerInitializer.NETEASE_RAKNET_VERSION, 11});
 
         // Close the original listener and terminate its event loops.
         try {

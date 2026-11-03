@@ -5,7 +5,7 @@
 让 **网易版我的世界（中国版基岩版）** 玩家与国际版基岩版玩家、Java 版玩家一起进入同一个使用
 **上游 Geyser** 的服务器。
 
-- 上游 Geyser：`2.12.x`（扩展 API `2.12.0`），不修改或替换 Geyser jar
+- 上游 Geyser：`2.12.1.x`（扩展 API `2.12.0`），不修改或替换 Geyser jar
 - 支持的网易客户端：协议 `819` / `860` / `898`（对应基岩版 1.21.93 / 1.21.124 / 1.21.130）
 - 兼容原版 **Floodgate**：网易玩家的 XUID、UUID 与客户端数据会像普通基岩玩家一样交给 Floodgate
 - 国际版基岩玩家和 Java 玩家继续走 Geyser 原版登录、编解码和注册表路径
@@ -17,7 +17,7 @@
 
 ## 安装
 
-1. 准备 JDK 21 和 Geyser 2.12.x，并在 Geyser 中启用 RakNet 传输
+1. 准备 JDK 21 和 Geyser 2.12.1.x，并在 Geyser 中启用 RakNet 传输
    （`transport: raknet` 或 `both`）。
 2. 把 `NEGeyserExtension.jar` 放进 Geyser 的 `extensions/` 目录。
 3. 启动一次服务器，扩展会生成 `extensions/negeyser/config.yml`。
@@ -63,7 +63,7 @@ extensions/
 ## 前置要求
 
 - JDK 21
-- Geyser 2.12.x，且启用 RakNet 传输（`transport: raknet` 或 `both`）
+- Geyser 2.12.1.x，且启用 RakNet 传输（`transport: raknet` 或 `both`）
 - 网易版客户端 1.21.93、1.21.124 或 1.21.130
 - 可选：原版 Floodgate（无需修改）
 

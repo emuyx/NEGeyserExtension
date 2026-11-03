@@ -17,8 +17,11 @@ import org.cloudburstmc.protocol.common.util.TextConverter;
  * NetEase text packet layouts.
  *
  * <p>NetEase 1.21.93/1.21.124 clients disconnect when they receive a normal CHAT packet, so chat
- * is downgraded to SYSTEM. 1.21.130 added an AuthorAndMessage category and two extra fields
- * (parameters and, for chat, a filtered-message suffix) around the vanilla layout.</p>
+ * is downgraded to SYSTEM. 1.21.130 added an AuthorAndMessage category and extra fields, but the
+ * 3.10 client still does not display player chat sent as AuthorAndMessage from a Java/Geyser
+ * server (system messages use the MessageOnly category and work). Player CHAT is therefore
+ * downgraded to SYSTEM for 898 as well; the Geyser chat message already contains the sender name.
+ * WHISPER/ANNOUNCEMENT keep the NetEase AuthorAndMessage layout.</p>
  */
 public final class NeteaseTextSerializer {
 
@@ -100,7 +103,16 @@ public final class NeteaseTextSerializer {
         @Override
         public void serialize(ByteBuf buffer, BedrockCodecHelper helper, TextPacket packet) {
             TextPacket.Type type = packet.getType();
-            if (type != TextPacket.Type.CHAT && type != TextPacket.Type.WHISPER && type != TextPacket.Type.ANNOUNCEMENT) {
+            if (type == TextPacket.Type.CHAT) {
+                // NetEase 3.10 does not render AuthorAndMessage player chat from a Java/Geyser
+                // server, while system messages (MessageOnly) are displayed. Downgrade chat to
+                // SYSTEM; the Geyser message already includes the sender name.
+                TextPacket system = packet.clone();
+                system.setType(TextPacket.Type.SYSTEM);
+                super.serialize(buffer, helper, system);
+                return;
+            }
+            if (type != TextPacket.Type.WHISPER && type != TextPacket.Type.ANNOUNCEMENT) {
                 super.serialize(buffer, helper, packet);
                 return;
             }

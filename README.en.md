@@ -5,7 +5,7 @@
 A Geyser extension that lets players on the **NetEase (China) edition of Minecraft
 Bedrock** join the same server as international Bedrock and Java players.
 
-- Built for upstream **Geyser 2.12.x** (extension API `2.12.0`); the Geyser jar is not
+- Built for upstream **Geyser 2.12.1.x** (extension API `2.12.0`); the Geyser jar is not
   replaced or modified.
 - Supports NetEase client protocols **819 / 860 / 898** (Minecraft Bedrock 1.21.93 /
   1.21.124 / 1.21.130).
@@ -22,7 +22,7 @@ Bedrock** join the same server as international Bedrock and Java players.
 
 ## Installation
 
-1. Install JDK 21 and Geyser 2.12.x, and enable the RakNet transport in Geyser
+1. Install JDK 21 and Geyser 2.12.1.x, and enable the RakNet transport in Geyser
    (`transport: raknet` or `both`).
 2. Put `NEGeyserExtension.jar` into Geyser's `extensions/` directory.
 3. Start the server once. The extension creates `extensions/negeyser/config.yml`.
@@ -75,7 +75,7 @@ The extension also handles client-specific quirks discovered during testing:
 ## Requirements
 
 - JDK 21
-- Geyser 2.12.x with the RakNet transport enabled (`transport: raknet` or `both`)
+- Geyser 2.12.1.x with the RakNet transport enabled (`transport: raknet` or `both`)
 - A NetEase Bedrock client on 1.21.93, 1.21.124 or 1.21.130
 - Optional: Floodgate (no changes required)
 

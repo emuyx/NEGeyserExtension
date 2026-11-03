@@ -199,7 +199,13 @@ public final class NeteaseBlocks {
      */
     private static List<NbtMap> loadEntries(int protocolVersion) throws Exception {
         String resource;
-        if (protocolVersion == 860) {
+        if (protocolVersion >= 898) {
+            // NetEase 3.10 (1.21.130_NetEase) reuses the 860 client-native block registry.
+            // Nukkit-MOT has no runtime_block_states_netease_898.dat and falls back to the
+            // 860 dat; the legacy 1_21_120 palette is wrong here because its crafting table
+            // and furnace states carry custom_appearance=0, which the 3.10 client does not know.
+            resource = "/netease/block_states_netease_898.dat";
+        } else if (protocolVersion == 860) {
             resource = "/netease/block_states_netease_860.dat";
         } else if (protocolVersion == 819) {
             resource = "/netease/block_states_netease_819.dat";

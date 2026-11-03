@@ -104,6 +104,7 @@ public final class NeteaseItemFilter {
             // Exact NetEase 1.21.124 client registry shipped by Nukkit-MOT.
             return "/netease/item_components_netease_860.nbt";
         } else if (protocolVersion >= 898) {
+            // Identical to Nukkit-MOT's ItemComponents/item_components_898.nbt for 3.10.
             return "/netease/item_components.1_21_130.nbt";
         }
         return "/netease/item_components.1_21_93.nbt";
@@ -144,7 +145,10 @@ public final class NeteaseItemFilter {
         if (protocolVersion == 860) {
             json = "/netease/runtime_item_states_netease_860.json";
         } else if (protocolVersion >= 898) {
-            json = "/netease/runtime_item_states.1_21_130.json";
+            // NetEase 3.10 client registry (1.21.130_NetEase), shipped by Nukkit-MOT.
+            // It has the same global id range as the old 1_21_130 table but reorders
+            // splash/lingering potions and command_block_minecart, and drops board/chalkboard.
+            json = "/netease/runtime_item_states_netease_898.json";
         } else {
             json = "/netease/runtime_item_states.1_21_93.json";
         }

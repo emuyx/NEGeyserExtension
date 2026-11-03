@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Fixed NetEase 3.10 player chat not being visible (only system messages appeared).
+  Player `TextPacket.Type.CHAT` messages are now downgraded to `SYSTEM` for protocol 898,
+  matching the existing 819/860 behaviour; the Geyser message already contains the sender
+  name. System messages use the same MessageOnly layout and were already visible.
+  Added a `[NETEASE-TEXT]` debug log for outbound text packets.
+- Fixed crafting recipes and recipe-book unlocks disappearing for NetEase clients
+  after the Geyser 2.12.1 upgrade. Geyser 2.12.1 always populates the Bedrock 26.40+
+  split recipe lists (`shapedData`, `shapelessData`, `multiData`, smithing lists), but
+  the NetEase 819/860/898 codecs still encode the legacy single `craftingData` list,
+  so the client received zero recipes and the crafting output slot stayed empty.
+  All split lists are now moved back into `craftingData` before filtering/encoding;
+  the recipe ids are registered again, so `UnlockedRecipesPacket` is no longer
+  filtered to empty.
+- Fixed NetEase 3.10 (protocol 898) crafting table and furnace rendering. The 898
+  path now uses the NetEase client-native block registry (the 860 table, which 3.10
+  reuses) instead of the legacy `block_palette.1_21_120.nbt`, whose
+  `custom_appearance` states do not exist on the 3.10 client. The 3.10 item table
+  (`runtime_item_states_netease_898.json`) is used as well; it drops board/chalkboard
+  and reorders splash/lingering potions and the command-block minecart.
+- Updated for Geyser `2.12.1-SNAPSHOT` (Cloudburst Protocol Beta15, Bedrock 26.60).
+  The non-NetEase path now uses Geyser's new `LoginPacketHandler`, the invalid-packet
+  handler uses its new session setter, and the shared listener advertises both
+  RakNet protocol 8 (NetEase) and 11 (regular Bedrock) instead of Geyser's protocol-11
+  pin, which would otherwise reject NetEase clients during the RakNet handshake.
+  This build requires Geyser 2.12.1 or newer.
 - Renamed the project from GeyserNetease to NEGeyserExtension to avoid confusion with
   the pre-existing LoHJG/GeyserNetease project.
 - The extension id is now `negeyser` (was `geyser-netease`). Move the existing

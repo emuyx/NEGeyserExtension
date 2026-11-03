@@ -45,6 +45,35 @@ final class NeteaseRecipeFilter {
     }
 
     /**
+     * Geyser 2.12.1 always emits the Bedrock 26.40+ split recipe lists
+     * ({@code shapedData}, {@code shapelessData}, {@code multiData}, smithing lists). NetEase
+     * codecs for protocols 819/860/898 still encode the legacy single {@code craftingData}
+     * list, so a packet with only the split lists is encoded with zero recipes. Move every
+     * split list back before the packet is filtered/encoded.
+     */
+    static void toLegacyFormat(CraftingDataPacket packet) {
+        List<RecipeData> legacy = packet.getCraftingData();
+        // Keep the approximate order used by Geyser 2.12.0: multi (cartography) first,
+        // then shaped/shapeless, then smithing.
+        move(legacy, packet.getMultiData());
+        move(legacy, packet.getShapedData());
+        move(legacy, packet.getShapelessData());
+        move(legacy, packet.getShapelessUserData());
+        move(legacy, packet.getShapelessChemistryData());
+        move(legacy, packet.getShapedChemistryData());
+        move(legacy, packet.getSmithingTransformData());
+        move(legacy, packet.getSmithingTrimData());
+    }
+
+    private static void move(List<RecipeData> target, List<? extends RecipeData> source) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        target.addAll(source);
+        source.clear();
+    }
+
+    /**
      * Removes recipes that reference items which do not exist in the NetEase client's registry
      * and remaps block definitions on recipe results. Surviving recipe ids are added to
      * {@code sentRecipeIds} so that recipe-book unlock packets can be filtered consistently.

@@ -52,6 +52,7 @@ import org.cloudburstmc.protocol.bedrock.packet.PlayerSkinPacket;
 import org.cloudburstmc.protocol.bedrock.packet.SetEntityDataPacket;
 import org.cloudburstmc.protocol.bedrock.packet.StartGamePacket;
 import org.cloudburstmc.protocol.bedrock.packet.SyncEntityPropertyPacket;
+import org.cloudburstmc.protocol.bedrock.packet.TextPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UnlockedRecipesPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UpdateBlockPacket;
 import org.cloudburstmc.protocol.bedrock.packet.UpdateSubChunkBlocksPacket;
@@ -402,6 +403,11 @@ public final class SpoofedUpstream extends UpstreamSession {
     }
 
     private BedrockPacket rewrite(BedrockPacket packet) {
+        if (packet instanceof TextPacket textPacket && debug()) {
+            io.github.negeyser.NEGeyserExtension.LOG.info("[NETEASE-TEXT] type="
+                + textPacket.getType() + " source=" + textPacket.getSourceName()
+                + " xuid=" + textPacket.getXuid() + " message=" + textPacket.getMessage());
+        }
         if (packet instanceof UpdateBlockPacket updateBlock) {
             updateBlock.setDefinition(wrap(updateBlock.getDefinition()));
             if (debug()) {
@@ -427,6 +433,10 @@ public final class SpoofedUpstream extends UpstreamSession {
                 entityIdentifiers.setIdentifiers(own);
             }
         } else if (packet instanceof CraftingDataPacket craftingData) {
+            // NetEase codecs (819/860/898) still encode the legacy single recipe list, while
+            // Geyser 2.12.1 always populates the 26.40+ split lists. Without this, the client
+            // receives a recipe packet with zero entries and the crafting output slot is empty.
+            NeteaseRecipeFilter.toLegacyFormat(craftingData);
             if (filterItems()) {
                 filterRecipes(craftingData);
             }
